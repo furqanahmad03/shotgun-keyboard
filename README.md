@@ -1,6 +1,7 @@
 # Keyboard Sounds
 
-A small Python 3 program that listens for keyboard events globally:
+A small Python 3 program that listens for keyboard events globally. It uses
+`pynput` on macOS/Windows and Linux's `evdev` interface on both Wayland and X11.
 
 - Letters and digits play `assets/gun.mp3`.
 - Return/Enter plays `assets/blast.mp3`.
@@ -33,6 +34,34 @@ Run the program with:
 ```bash
 python3 main.py
 ```
+
+## Linux permissions (Wayland and X11)
+
+Linux uses the `evdev` block in `main.py` automatically; do not uncomment or
+replace any code. Because `evdev` reads the keyboard from `/dev/input/event*`,
+your user must have permission to access those devices.
+
+On distributions that provide the `input` group, add your user to it:
+
+```bash
+sudo usermod -aG input "$USER"
+```
+
+Log out completely and log back in for the new group membership to take effect,
+then activate the virtual environment and run `python3 main.py`. Membership in
+the `input` group permits reading all local input, so use it only on a trusted
+machine. A device-specific udev rule can provide narrower access when needed.
+
+If installation of `evdev` reports missing compiler or Python headers on
+Ubuntu/Debian, install them and retry:
+
+```bash
+sudo apt install build-essential python3-dev
+python3 -m pip install -r requirements.txt
+```
+
+The Linux backend supports letters, the number row and numeric keypad, Enter and
+numeric-keypad Enter, Backspace, Space, and Escape.
 
 ## macOS permissions
 

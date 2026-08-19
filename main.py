@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
 """Play sound effects in response to global keyboard input."""
 
+from __future__ import annotations
+
 from pathlib import Path
 import os
+import select
+import string
 import sys
 
 # Keep pygame's startup message out of this command-line program.
 os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
 
 import pygame
-from pynput import keyboard
 
 
 ASSETS_DIR = Path(__file__).resolve().parent / "assets"
@@ -48,14 +51,15 @@ def play(sound: pygame.mixer.Sound) -> None:
         channel.play(sound)
 
 
-def main() -> int:
-    try:
-        gun_sound, bomb_sound, load_sound = load_sounds()
-    except (FileNotFoundError, RuntimeError) as exc:
-        print(f"Error: {exc}", file=sys.stderr)
-        return 1
+def listen_with_pynput(
+    gun_sound: pygame.mixer.Sound,
+    bomb_sound: pygame.mixer.Sound,
+    load_sound: pygame.mixer.Sound,
+) -> None:
+    """Listen globally on macOS and Windows."""
+    from pynput import keyboard
 
-    def on_press(key: keyboard.Key | keyboard.KeyCode) -> bool | None:
+    def on_press(key) -> bool | None:
         if key == keyboard.Key.esc:
             return False
 
@@ -75,10 +79,88 @@ def main() -> int:
 
         return None
 
+    with keyboard.Listener(on_press=on_press) as listener:
+        listener.join()
+
+
+def listen_with_evdev(
+    gun_sound: pygame.mixer.Sound,
+    bomb_sound: pygame.mixer.Sound,
+    load_sound: pygame.mixer.Sound,
+) -> None:
+    """Listen through Linux input devices, including under Wayland."""
+    from evdev import InputDevice, ecodes, list_devices
+
+    letter_codes = {
+        getattr(ecodes, f"KEY_{letter}") for letter in string.ascii_uppercase
+    }
+    digit_codes = {getattr(ecodes, f"KEY_{digit}") for digit in string.digits}
+    digit_codes.update(getattr(ecodes, f"KEY_KP{digit}") for digit in string.digits)
+
+    devices = []
+    inaccessible = []
+    for path in list_devices():
+        try:
+            device = InputDevice(path)
+            key_codes = set(device.capabilities().get(ecodes.EV_KEY, []))
+        except PermissionError:
+            inaccessible.append(path)
+            continue
+
+        # Ignore mice, power buttons, and other devices that expose only a few keys.
+        if len(key_codes & letter_codes) >= 10 and ecodes.KEY_ENTER in key_codes:
+            devices.append(device)
+        else:
+            device.close()
+
+    if not devices:
+        if inaccessible:
+            raise PermissionError(
+                "Cannot read Linux keyboard devices. Grant your user access to "
+                "/dev/input/event* as described in README.md, then log out and back in."
+            )
+        raise RuntimeError("No Linux keyboard input device was found.")
+
+    names = ", ".join(device.name or device.path for device in devices)
+    print(f"Linux keyboard device(s): {names}")
+
+    try:
+        while True:
+            readable, _, _ = select.select(devices, [], [])
+            for device in readable:
+                for event in device.read():
+                    # 1 is a new key press; 2 is the normal held-key repeat event.
+                    if event.type != ecodes.EV_KEY or event.value not in (1, 2):
+                        continue
+
+                    if event.code == ecodes.KEY_ESC:
+                        return
+                    if event.code in (ecodes.KEY_ENTER, ecodes.KEY_KPENTER):
+                        play(bomb_sound)
+                    elif event.code in (ecodes.KEY_BACKSPACE, ecodes.KEY_SPACE):
+                        play(load_sound)
+                    elif event.code in letter_codes or event.code in digit_codes:
+                        play(gun_sound)
+    finally:
+        for device in devices:
+            device.close()
+
+
+def main() -> int:
+    try:
+        gun_sound, bomb_sound, load_sound = load_sounds()
+    except (FileNotFoundError, RuntimeError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
     print("Listening globally. Press Esc to quit.")
     try:
-        with keyboard.Listener(on_press=on_press) as listener:
-            listener.join()
+        # Linux uses evdev so native Wayland applications are captured.
+        # macOS and Windows use pynput's native global-keyboard backends.
+        if sys.platform.startswith("linux"):
+            listen_with_evdev(gun_sound, bomb_sound, load_sound)
+        else:
+            listen_with_pynput(gun_sound, bomb_sound, load_sound)
     except KeyboardInterrupt:
         pass
     except Exception as exc:
